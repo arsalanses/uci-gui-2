@@ -1,0 +1,93 @@
+from flask_socketio import SocketIO, send, emit
+from flask import render_template
+from flask import jsonify
+from flask import request
+from flask import Flask
+import chess.engine
+import chess.pgn
+import chess
+
+
+app = Flask(__name__)
+socketio = SocketIO(app)
+
+@app.route('/')
+def root():
+    return render_template('index.html')
+
+@socketio.on('/fen')
+def handle_message(data):
+    engine = chess.engine.SimpleEngine.popen_uci("/home/mint/share/Other/stockfish_14.1_linux_x64/stockfish_14.1_linux_x64")
+
+    with engine.analysis(chess.Board(data['data'])) as analysis:
+        send(f"fen: {data['data']}")
+        
+        for info in analysis:
+            print(info.get("score"), info.get("pv"))
+
+            emit('/analysis', str(info.get("score")), json=True)
+
+            # Arbitrary stop condition.
+            if info.get("seldepth", 0) > 2:
+                break
+
+    engine.quit()
+
+    emit('/finished', 'finished')
+
+@app.route('/evaluate', methods=['POST'])
+def make_move():
+    fen = request.form.get('fen')
+    board = chess.Board(fen)
+
+    engine = chess.engine.SimpleEngine.popen_uci('/home/mint/share/Other/stockfish_14.1_linux_x64/stockfish_14.1_linux_x64')
+    fixed_depth = request.form.get('fixed_depth')
+    move_time = request.form.get('move_time')
+
+    if move_time != '0':
+        if move_time == 'instant':
+            try:
+                info = engine.analyse(board, chess.engine.Limit(time=0.1))
+            except:
+                info = {}
+        else:
+            try:
+                info = engine.analyse(board, chess.engine.Limit(time=int(move_time)))
+            except:
+                info = {}
+
+    if fixed_depth != '0':
+        try:
+            info = engine.analyse(board, chess.engine.Limit(depth=int(fixed_depth)))
+        except:
+            info = {}
+
+    engine.quit()
+    
+    try:
+        best_move = info['pv'][0]
+        board.push(best_move)
+        try:
+            score = -int(str(info['score'].relative)) / 100
+        except:
+            score = str(-info['score'].pov(info['score'].turn))
+
+        return {
+            'pv': [str(move) for move in info['pv']],
+            # 'pv': ' '.join([str(move) for move in info['pv']]),
+            'best_move': str(best_move),
+            'depth': info['depth'],
+            'nodes': info['nodes'],
+            'time': info['time'],
+            'fen': board.fen(),
+            'score': score
+        }
+    except:
+        return {
+            'fen': board.fen(),
+            'score': '#+1'
+        }
+
+if __name__ == '__main__':
+    # app.run(debug=True, threaded=True)
+    socketio.run(app)
